@@ -1,24 +1,16 @@
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.postgres import PostgresSaver
-import psycopg2
 from app.config import settings
 
-def get_checkpointer():
-    try:
-        connection_kwargs = {
-            "autocommit": True,
-            "prepare_threshold": 0,
-        }
-        conn_str = f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
-        
-        # Test connection
-        conn = psycopg2.connect(conn_str)
-        conn.close()
-        
-        print("LangGraph Checkpointer: Using PostgreSQL Saver")
-        return PostgresSaver.from_conn_string(conn_str)
-    except Exception as e:
-        print(f"Postgres Checkpointer unavailable ({e}). Falling back to MemorySaver.")
-        return MemorySaver()
+checkpointer = MemorySaver()
 
-checkpointer = get_checkpointer()
+try:
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg_pool import ConnectionPool
+
+    postgres_url = getattr(settings, "POSTGRES_URL", getattr(settings, "POSTGRES_URI", None))
+
+    if postgres_url:
+        pool = ConnectionPool(conninfo=postgres_url, max_size=10, kwargs={"autocommit": True})
+        checkpointer = PostgresSaver(pool)
+except Exception as e:
+    pass
