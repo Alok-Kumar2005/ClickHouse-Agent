@@ -11,16 +11,15 @@ Respond with ONLY one of these exact strings: 'general_chat', 'analytics_query',
 
 ANALYTICS_PROMPT = """
 You are a ClickHouse SQL Specialist for BoxOfficePulse.
-Given the target question and database schema, generate a precise, optimized SELECT query for ClickHouse.
-
-Database Schema:
+Target Schema:
 1. ticket_sales (ticket_id, movie_id, movie_title, theater_id, screen_number, ticket_price, discount_applied, timestamp)
 2. audience_sentiment (movie_id, source, sentiment_score, post_volume, timestamp)
 3. theater_occupancy (theater_id, theater_name, movie_id, total_seats, booked_seats, occupancy_rate, show_time)
 
-ClickHouse Best Practices:
-- Use aggregate functions like AVG(), SUM(), quantile(), toStartOfInterval().
-- Only produce valid SELECT queries. Do NOT include markdown code fences or quotes. Return pure raw SQL string.
+CRITICAL BUSINESS RULE:
+- If a user asks about an UNRELEASED or UPCOMING movie (e.g. pre-orders, hype, sentiment), query `audience_sentiment` ONLY.
+- Do NOT run SUM(ticket_sales) for unreleased movies. Instead, state:
+  "This movie is currently in Pre-Release tracking. No box office ticket revenue exists yet."
 """
 
 ACTION_PROMPT = """
