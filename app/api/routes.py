@@ -9,7 +9,8 @@ from langchain_core.messages import HumanMessage
 
 from app.api.schemas import (
     UserRegisterRequest, UserLoginRequest, TokenResponse,
-    CreateThreadRequest, ThreadSchema, ChatRequest, ChatResponse
+    CreateThreadRequest, ThreadSchema, ChatRequest, ChatResponse,
+    UpdateThreadRequest, DeleteThreadResponse, GenerateTitleRequest
 )
 from app.api.auth import USERS_DB, THREADS_DB, create_access_token, get_current_user
 from app.agent.graph import graph
@@ -140,3 +141,78 @@ async def chat_stream_endpoint(req: ChatRequest, current_user: dict = Depends(ge
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.patch("/threads/{thread_id}", response_model=ThreadSchema)
+async def update_thread_title(
+    thread_id: str, 
+    req: UpdateThreadRequest, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Updates the title of a specific chat thread."""
+    user_id = current_user["user_id"]
+    threads = THREADS_DB.get(user_id, [])
+    
+    for thread in threads:
+        if thread["thread_id"] == thread_id:
+            thread["title"] = req.title
+            return thread
+            
+    raise HTTPException(status_code=404, detail="Thread not found")
+
+
+@router.delete("/threads/{thread_id}", response_model=DeleteThreadResponse)
+async def delete_thread(
+    thread_id: str, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Deletes a chat thread for the current user."""
+    user_id = current_user["user_id"]
+    if user_id in THREADS_DB:
+        THREADS_DB[user_id] = [t for t in THREADS_DB[user_id] if t["thread_id"] != thread_id]
+        return DeleteThreadResponse(status="deleted", thread_id=thread_id)
+        
+    raise HTTPException(status_code=404, detail="Thread not found")
+
+
+@router.post("/threads/{thread_id}/generate-title", response_model=ThreadSchema)
+async def generate_thread_title(
+    thread_id: str,
+    req: GenerateTitleRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Generates a title using Gemini LLM for the thread based on the first query."""
+    user_id = current_user["user_id"]
+    threads = THREADS_DB.get(user_id, [])
+    
+    # Find the thread
+    target_thread = None
+    for thread in threads:
+        if thread["thread_id"] == thread_id:
+            target_thread = thread
+            break
+            
+    if not target_thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+        
+    # Get LLM and generate a title
+    from app.agent.llm_service import get_llm
+    llm = get_llm(temperature=0.3)
+    prompt = (
+        f"Generate a short, concise, high-density dashboard title (2-10 words maximum) "
+        f"for a chat session starting with this user query: '{req.first_query}'. "
+        f"Do not put any quotes, prefix, or extra text in the response, just return the title itself. "
+        f"Format in proper Title Case (capitalizing key words)."
+    )
+    
+    try:
+        response = await asyncio.to_thread(llm.invoke, prompt)
+        generated_title = response.content.strip().replace('"', '').replace("'", "")
+        # Fallback if empty
+        if not generated_title:
+            generated_title = "New Session"
+    except Exception as e:
+        generated_title = "New Session"
+        
+    target_thread["title"] = generated_title
+    return target_thread

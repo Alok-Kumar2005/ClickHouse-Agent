@@ -48,3 +48,13 @@ class ChatResponse(BaseModel):
     query_results: Optional[List[Dict[str, Any]]] = None
     recommended_actions: Optional[List[Dict[str, Any]]] = None
     reasoning_steps: List[str] = []
+
+class UpdateThreadRequest(BaseModel):
+    title: str
+
+class DeleteThreadResponse(BaseModel):
+    status: str
+    thread_id: str
+
+class GenerateTitleRequest(BaseModel):
+    first_query: str
