@@ -15,3 +15,15 @@ class AgentState(TypedDict):
     recommended_actions: Optional[List[Dict[str, Any]]]
 
     reasoning_steps: Annotated[List[str], operator.add]
+
+    # ── Agentic loop: entity resolution & self-correction ──────────────────────
+    # Exact DB titles matched from user keywords (set-deduplicated)
+    resolved_entities: List[str]
+    # Actual ClickHouse titles fetched as grounding hints after a zero-row retry
+    available_db_titles: List[str]
+    # Retry loop counters & signals
+    iteration_count: int       # incremented in generate_sql_node; default 0
+    max_iterations: int        # hard cap; default 5
+    needs_retry: bool          # conditional edge signal; default False
+    # Previous SQL that returned 0 rows — fed back to the LLM on next attempt
+    last_failed_sql: Optional[str]

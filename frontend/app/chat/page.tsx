@@ -17,7 +17,7 @@ import { InputBar } from '@/components/chat/InputBar';
 import { StatusBadge, intentVariant } from '@/components/ui/StatusBadge';
 import { ThreadSchema } from '@/types';
 import { Header } from '@/components/layout/Header';
-import { fetchDatasetStatus } from '@/lib/api';
+import { fetchDatasetStatus, fetchLiveStreamStatus } from '@/lib/api';
 
 const MAX_MESSAGES_PER_THREAD = 20;
 
@@ -81,6 +81,26 @@ export default function ChatPage() {
   useEffect(() => {
     loadDatasetStatus();
   }, [loadDatasetStatus]);
+
+  const [isLiveStreaming, setIsLiveStreaming] = useState(false);
+  const [totalLiveEvents, setTotalLiveEvents] = useState(0);
+
+  const loadLiveStreamStatus = useCallback(async () => {
+    try {
+      const status = await fetchLiveStreamStatus();
+      setIsLiveStreaming(status.is_active);
+      setTotalLiveEvents(status.total_events_ingested);
+    } catch (err) {
+      console.error('Failed to fetch live stream status:', err);
+    }
+  }, []);
+
+  // Poll live stream status every 2 seconds
+  useEffect(() => {
+    loadLiveStreamStatus();
+    const interval = setInterval(loadLiveStreamStatus, 2000);
+    return () => clearInterval(interval);
+  }, [loadLiveStreamStatus]);
 
   // Auth guard
   useEffect(() => {
@@ -228,6 +248,9 @@ export default function ChatPage() {
           datasetStatus={datasetStatus}
           onRefreshDatasetStatus={loadDatasetStatus}
           onLogout={handleLogout}
+          isLiveStreaming={isLiveStreaming}
+          totalLiveEvents={totalLiveEvents}
+          onRefreshLiveStreamStatus={loadLiveStreamStatus}
         />
 
         {/* ── Chat area ────────────────────────── */}
@@ -275,6 +298,23 @@ export default function ChatPage() {
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Live streaming context chip above input bar */}
+            {isLiveStreaming && (
+              <div className="mx-4 mb-2 flex items-center justify-between rounded-xl border border-rose-500/20 bg-rose-950/20 px-4 py-2.5 text-xs text-rose-400 backdrop-blur-sm shadow shadow-rose-950/30">
+                <div className="flex items-center gap-2">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                  </span>
+                  <span className="font-bold">🔴 Live Feed Ingesting (20 rec/sec)</span>
+                  <span className="opacity-80">({totalLiveEvents.toLocaleString()} records total)</span>
+                </div>
+                <div className="text-[10px] text-zinc-500 font-medium hidden md:block">
+                  Real-time ticket sales streaming is active. Ask BoxOfficePulse about live metrics!
+                </div>
+              </div>
+            )}
 
             <InputBar
               disabled={!activeThread || isLimitReached}

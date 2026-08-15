@@ -57,4 +57,13 @@ class DeleteThreadResponse(BaseModel):
     thread_id: str
 
 class GenerateTitleRequest(BaseModel):
-    first_query: str
+    first_query: str
+
+
+# Stream Configuration Schema
+class StreamStartRequest(BaseModel):
+    movies: Optional[List[str]] = Field(default=None, description="List of movie titles to stream. If empty, falls back to TMDB top movies.")
+    min_price: Optional[float] = Field(default=None, ge=0, description="Minimum ticket price in dollars.")
+    max_price: Optional[float] = Field(default=None, ge=0, description="Maximum ticket price in dollars.")
+    events_per_second: Optional[int] = Field(default=None, ge=1, le=50, description="Events to generate per second (1-50).")
+    theaters: Optional[List[str]] = Field(default=None, description="List of Theater IDs to stream. If empty, uses all available theaters.")

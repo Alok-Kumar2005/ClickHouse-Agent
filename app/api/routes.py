@@ -14,7 +14,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.api.schemas import (
     UserRegisterRequest, UserLoginRequest, TokenResponse,
     CreateThreadRequest, ThreadSchema, ChatRequest, ChatResponse,
-    UpdateThreadRequest, DeleteThreadResponse, GenerateTitleRequest
+    UpdateThreadRequest, DeleteThreadResponse, GenerateTitleRequest,
+    StreamStartRequest
 )
 from app.api.auth import create_access_token, get_current_user
 from app.db.postgres import (
@@ -23,6 +24,7 @@ from app.db.postgres import (
     update_thread_title_in_db, delete_thread_in_db, get_thread_by_id
 )
 from app.agent.graph import graph
+from app.services.live_streamer import live_streamer
 
 router = APIRouter(prefix="/api/v1", tags=["BoxOfficePulse Suite"])
 
@@ -314,6 +316,48 @@ async def upload_custom_dataset(
             status_code=500, 
             detail=f"Failed to process custom dataset: {str(e)}"
         )
+
+
+@router.post("/stream/start")
+async def start_stream(req: StreamStartRequest = None):
+    """Spawns or reconfigures the background streaming task."""
+    config = req.model_dump(exclude_none=True) if req else {}
+    live_streamer.start(config)
+    active_config = {
+        "movies": config.get("movies"),
+        "min_price": config.get("min_price"),
+        "max_price": config.get("max_price"),
+        "events_per_second": config.get("events_per_second"),
+        "theaters": config.get("theaters"),
+    }
+    return {"status": "streaming_active", "config": active_config}
+
+
+@router.post("/stream/stop")
+async def stop_stream():
+    """Cancels the background task."""
+    live_streamer.stop()
+    return {"status": "streaming_stopped"}
+
+
+@router.get("/stream/status")
+async def get_stream_status():
+    """Returns current stream status and active configuration."""
+    return {
+        "is_active": live_streamer.is_active,
+        "total_events_ingested": live_streamer.total_events_ingested,
+        "config": live_streamer.config if live_streamer.is_active else {}
+    }
+
+
+@router.get("/dataset/template")
+async def get_dataset_template():
+    """Returns expected CSV format schema and guidance text."""
+    return {
+        "required_columns": ["movie_title", "ticket_price", "theater_id"],
+        "sample_row": {"movie_title": "Dune 2", "ticket_price": 18.50, "theater_id": "TH-102"},
+        "guidance": "Files must be UTF-8 encoded CSV. Headers are auto-sanitized."
+    }
 
 
 @router.post("/simulator/trigger")
