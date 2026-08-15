@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AuthUser } from '@/types';
 import { getUser, getToken, saveSession, clearSession } from '@/lib/auth';
+import { logoutRequest } from '@/lib/api';
 
 export function useAuth() {
   const [user, setUser] = useState<Omit<AuthUser, 'token'> | null>(null);
@@ -24,6 +25,7 @@ export function useAuth() {
   }, []);
 
   const logout = useCallback(() => {
+    logoutRequest().catch(() => {});
     clearSession();
     setUser(null);
     setToken(null);

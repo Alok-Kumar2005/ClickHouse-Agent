@@ -16,6 +16,9 @@ def get_clickhouse_client():
     )
     return client
 
+ch_client = get_clickhouse_client()
+
+
 def init_clickhouse():
     """Initializes tables using schema SQL."""
     client = get_clickhouse_client()

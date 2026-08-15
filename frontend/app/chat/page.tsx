@@ -16,6 +16,8 @@ import { MessageStream } from '@/components/chat/MessageStream';
 import { InputBar } from '@/components/chat/InputBar';
 import { StatusBadge, intentVariant } from '@/components/ui/StatusBadge';
 import { ThreadSchema } from '@/types';
+import { Header } from '@/components/layout/Header';
+import { fetchDatasetStatus } from '@/lib/api';
 
 const MAX_MESSAGES_PER_THREAD = 20;
 
@@ -45,12 +47,40 @@ function generateCleanTitle(prompt: string): string {
 export default function ChatPage() {
   const router = useRouter();
   const { user, isAuthenticated, isReady, logout } = useAuth();
-  const { messages, isStreaming, error, sendMessage, cancelStream, clearMessages } = useChat();
+  const { 
+    messages, 
+    isStreaming, 
+    error, 
+    sendMessage, 
+    cancelStream, 
+    clearMessages,
+    loadHistory,
+    isLoadingHistory
+  } = useChat();
   const { threads, loading, loadThreads, addThread, renameThread, removeThread } = useThreads();
 
   const [activeThread, setActiveThread] = useState<ThreadSchema | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentTime, setCurrentTime] = useState('');
+  const [datasetStatus, setDatasetStatus] = useState<{
+    active: boolean;
+    row_count: number;
+    columns: string[];
+  } | null>(null);
+
+  const loadDatasetStatus = useCallback(async () => {
+    try {
+      const status = await fetchDatasetStatus();
+      setDatasetStatus(status);
+    } catch (err) {
+      console.error('Failed to fetch dataset status:', err);
+    }
+  }, []);
+
+  // Fetch dataset status on mount
+  useEffect(() => {
+    loadDatasetStatus();
+  }, [loadDatasetStatus]);
 
   // Auth guard
   useEffect(() => {
@@ -82,9 +112,10 @@ export default function ChatPage() {
     }
   }, [threads, activeThread]);
 
-  function handleSelectThread(thread: ThreadSchema) {
+  async function handleSelectThread(thread: ThreadSchema) {
     setActiveThread(thread);
     clearMessages();
+    await loadHistory(thread.thread_id);
   }
 
   function handleNewThread(thread: ThreadSchema) {
@@ -187,71 +218,42 @@ export default function ChatPage() {
       {/* ── Main workspace ──────────────────────── */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Header bar */}
-        <header className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/60 px-4 py-3 backdrop-blur-sm shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            {/* Sidebar toggle */}
-            <button
-              onClick={() => setSidebarOpen((v) => !v)}
-              className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-300"
-              title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
-            >
-              {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-            </button>
-
-            {/* Thread title */}
-            <div className="min-w-0">
-              {activeThread ? (
-                <h1 className="truncate text-sm font-bold text-zinc-200">
-                  {activeThread.title}
-                </h1>
-              ) : (
-                <h1 className="text-sm font-semibold text-zinc-500">
-                  Select or create a session →
-                </h1>
-              )}
-              {activeThread && (
-                <p className="text-[10px] text-zinc-600 font-mono">{activeThread.thread_id}</p>
-              )}
-            </div>
-
-            {/* Intent badge */}
-            {currentIntent && (
-              <StatusBadge
-                label={currentIntent.replace(/_/g, ' ')}
-                variant={intentVariant(currentIntent)}
-              />
-            )}
-
-            {/* Streaming badge */}
-            {isStreaming && (
-              <div className="flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-950/40 px-2.5 py-1 text-[10px] font-semibold text-cyan-400">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
-                Executing
-              </div>
-            )}
-          </div>
-
-          {/* Right-side system status */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-zinc-600">
-              <Wifi size={12} className="text-emerald-400" />
-              <span className="text-emerald-400 font-semibold">API Live</span>
-            </div>
-            <div className="hidden md:flex items-center gap-1.5 text-[11px] text-zinc-600">
-              <Database size={12} className="text-zinc-500" />
-              <span>ClickHouse</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-[11px] font-mono text-zinc-500">
-              <Clock size={11} />
-              {currentTime}
-            </div>
-          </div>
-        </header>
+        <Header
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          activeThread={activeThread}
+          currentIntent={currentIntent}
+          isStreaming={isStreaming}
+          currentTime={currentTime}
+          datasetStatus={datasetStatus}
+          onRefreshDatasetStatus={loadDatasetStatus}
+          onLogout={handleLogout}
+        />
 
         {/* ── Chat area ────────────────────────── */}
         {activeThread ? (
           <>
-            <MessageStream messages={messages} isStreaming={isStreaming} />
+            {/* Context Aware Active Dataset Indicator */}
+            {datasetStatus?.active && (
+              <div className="mx-4 mt-3 flex items-center justify-between rounded-xl border border-cyan-500/20 bg-cyan-950/20 px-4 py-2.5 text-xs text-cyan-400 backdrop-blur-sm shadow shadow-cyan-950/30">
+                <div className="flex items-center gap-2">
+                  <Database size={13} className="animate-pulse shrink-0" />
+                  <span className="font-bold">Dataset Context Active:</span>
+                  <span className="font-mono bg-cyan-950/50 px-1.5 py-0.5 rounded border border-cyan-500/10">custom_user_sales</span>
+                  <span className="opacity-80">({datasetStatus.row_count} rows, {datasetStatus.columns.length} columns)</span>
+                </div>
+                <div className="text-[10px] text-zinc-500 font-medium hidden md:block">
+                  Ask the agent directly regarding your custom dataset or live box office metrics
+                </div>
+              </div>
+            )}
+            {isLoadingHistory ? (
+              <div className="flex flex-1 items-center justify-center">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-cyan-400" />
+              </div>
+            ) : (
+              <MessageStream messages={messages} isStreaming={isStreaming} />
+            )}
 
             {/* Limit Warning Banner */}
             {isLimitReached && (

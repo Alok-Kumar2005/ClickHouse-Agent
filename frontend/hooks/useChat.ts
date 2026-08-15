@@ -6,6 +6,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { ChatMessage, SSEPayload } from '@/types';
 import { openChatStream } from '@/lib/sse';
+import { fetchThreadMessages } from '@/lib/api';
 
 // Fallback to uuid without package if unavailable
 function genId() {
@@ -102,5 +103,33 @@ export function useChat() {
     setError(null);
   }, []);
 
-  return { messages, isStreaming, error, sendMessage, cancelStream, clearMessages };
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
+  const loadHistory = useCallback(async (threadId: string) => {
+    setIsLoadingHistory(true);
+    setError(null);
+    try {
+      const history = await fetchThreadMessages(threadId);
+      const mapped = history.map((m) => ({
+        ...m,
+        timestamp: new Date(m.timestamp),
+      }));
+      setMessages(mapped);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load conversation history.');
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, []);
+
+  return {
+    messages,
+    isStreaming,
+    error,
+    sendMessage,
+    cancelStream,
+    clearMessages,
+    loadHistory,
+    isLoadingHistory
+  };
 }

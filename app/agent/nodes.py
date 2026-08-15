@@ -1,7 +1,14 @@
 import json
-from typing import Literal, List, Optional
+from typing import Literal, List, Optional, Any
 from pydantic import BaseModel, Field
-from langchain_core.messages import AIMessage
+from langchain_core.messages import (
+    BaseMessage,
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    trim_messages
+)
+from langchain_core.runnables import RunnableConfig
 
 from app.agent.state import AgentState
 from app.agent.llm_service import get_llm
@@ -28,6 +35,94 @@ class ActionPlan(BaseModel):
     executive_summary: str = Field(description="High level summary of recommendations")
 
 
+def character_token_counter(messages: List[BaseMessage]) -> int:
+    total_chars = 0
+    for msg in messages:
+        if isinstance(msg, tuple) and len(msg) >= 2:
+            total_chars += len(str(msg[1]))
+        elif hasattr(msg, "content"):
+            if isinstance(msg.content, list):
+                total_chars += len(json.dumps(msg.content))
+            else:
+                total_chars += len(str(msg.content))
+        else:
+            total_chars += len(str(msg))
+    return (total_chars + 3) // 4
+
+
+def safe_trim_messages(messages: List[Any], max_tokens: int = 5000) -> List[Any]:
+    trimmed = trim_messages(
+        messages,
+        max_tokens=max_tokens,
+        strategy="last",
+        token_counter=character_token_counter,
+        include_system=True,
+        allow_partial=False
+    )
+    
+    # Check if input had non-system messages but trimmed result does not
+    has_input_non_system = any(
+        not (isinstance(m, tuple) and m[0] == "system" or getattr(m, "type", None) == "system" or m.__class__.__name__ == "SystemMessage")
+        for m in messages
+    )
+    has_output_non_system = any(
+        not (isinstance(m, tuple) and m[0] == "system" or getattr(m, "type", None) == "system" or m.__class__.__name__ == "SystemMessage")
+        for m in trimmed
+    )
+    
+    if has_input_non_system and not has_output_non_system:
+        # Fallback: keep system messages and a truncated version of the last non-system message
+        system_msgs = []
+        last_non_system = None
+        for m in messages:
+            is_sys = (isinstance(m, tuple) and m[0] == "system") or getattr(m, "type", None) == "system" or m.__class__.__name__ == "SystemMessage"
+            if is_sys:
+                system_msgs.append(m)
+            else:
+                last_non_system = m
+                
+        sys_chars = sum(len(str(getattr(m, "content", m[1] if isinstance(m, tuple) else m))) for m in system_msgs)
+        rem_chars = max(0, max_tokens * 4 - sys_chars)
+        
+        if last_non_system is not None:
+            if isinstance(last_non_system, tuple):
+                role, content = last_non_system[0], str(last_non_system[1])
+                truncated_content = content[-rem_chars:] if rem_chars > 0 else ""
+                last_non_system = (role, truncated_content)
+            elif hasattr(last_non_system, "content"):
+                content = str(last_non_system.content)
+                truncated_content = content[-rem_chars:] if rem_chars > 0 else ""
+                if isinstance(last_non_system, HumanMessage):
+                    last_non_system = HumanMessage(content=truncated_content, additional_kwargs=getattr(last_non_system, "additional_kwargs", {}))
+                elif isinstance(last_non_system, AIMessage):
+                    last_non_system = AIMessage(content=truncated_content, additional_kwargs=getattr(last_non_system, "additional_kwargs", {}))
+                else:
+                    last_non_system = last_non_system.__class__(content=truncated_content)
+            trimmed = system_msgs + [last_non_system]
+            
+    return trimmed
+
+
+def get_custom_table_schema(user_id: Optional[str] = None) -> str:
+    """Dynamically fetch user_datasets schema if the table exists and contains records for user."""
+    try:
+        from app.db.clickhouse import ch_client
+        exists = ch_client.command("EXISTS TABLE user_datasets")
+        if exists and user_id:
+            # Check if this user actually has records uploaded
+            count_res = ch_client.query(f"SELECT count() FROM user_datasets WHERE user_id = '{user_id}'")
+            has_records = count_res.result_rows[0][0] > 0 if count_res.result_rows else False
+            if has_records:
+                res = ch_client.query("DESCRIBE TABLE user_datasets")
+                columns_info = []
+                for row in res.result_rows:
+                    columns_info.append(f"{row[0]} ({row[1]})")
+                return f"4. Table: user_datasets\n   Columns: {', '.join(columns_info)}"
+    except Exception as e:
+        print("Error fetching custom table schema:", e)
+    return ""
+
+
 class BoxOfficeAgentNodes:
     
     @staticmethod
@@ -35,11 +130,12 @@ class BoxOfficeAgentNodes:
         """Using structured output """
         llm = get_llm(temperature=0.0).with_structured_output(IntentClassification)
         
-        last_message = state["messages"][-1].content
-        result: IntentClassification = llm.invoke([
-            ("system", SUPERVISOR_PROMPT),
-            ("user", last_message)
-        ])
+        messages = [
+            SystemMessage(content=SUPERVISOR_PROMPT)
+        ] + list(state["messages"])
+        trimmed_messages = safe_trim_messages(messages)
+        
+        result: IntentClassification = llm.invoke(trimmed_messages)
         
         return {
             "current_intent": result.intent,
@@ -47,23 +143,39 @@ class BoxOfficeAgentNodes:
         }
 
     @staticmethod
-    def analytics_node(state: AgentState) -> dict:
+    def analytics_node(state: AgentState, config: Optional[RunnableConfig] = None) -> dict:
         """Generates ClickHouse SQL, executes query, and summarizes findings."""
         llm = get_llm(temperature=0.1)
         user_query = state["messages"][-1].content
         
-        # 1. Generate SQL
-        sql_response = llm.invoke([
-            ("system", ANALYTICS_PROMPT),
-            ("user", user_query)
-        ]).content.strip().replace("```sql", "").replace("```", "").strip()
+        user_id = config.get("configurable", {}).get("user_id") if config else None
+        
+        custom_schema = get_custom_table_schema(user_id)
+        prompt = ANALYTICS_PROMPT
+        if custom_schema:
+            prompt += f"\n\nActive Custom Dataset:\n{custom_schema}\n"
+            prompt += "\nCRITICAL BUSINESS RULE FOR CUSTOM DATASET:\n"
+            prompt += "- If the user refers to their custom dataset, uploaded CSV, 'user_datasets', or 'custom data', you MUST query the `user_datasets` table.\n"
+            prompt += f"- When querying user_datasets, you MUST ALWAYS append WHERE user_id = '{user_id}' to your query. You are strictly forbidden from executing SELECT statements without filtering by user_id.\n"
+            prompt += "- Use the correct column names from the user_datasets schema provided above."
+        
+        # 1. Generate SQL with full conversation history
+        messages = [
+            SystemMessage(content=prompt)
+        ] + list(state["messages"])
+        trimmed_messages = safe_trim_messages(messages)
+        
+        sql_response = llm.invoke(trimmed_messages).content.strip().replace("```sql", "").replace("```", "").strip()
         
         # 2. Execute against ClickHouse
-        query_result = execute_clickhouse_query.invoke({"query": sql_response})
+        query_result = execute_clickhouse_query.invoke({"query": sql_response, "user_id": user_id or ""})
         
         # 3. Executive Data Summary
         analysis_prompt = f"User Query: '{user_query}'\nGenerated SQL: {sql_response}\nData Output: {query_result}\nProvide a concise executive summary."
-        summary = llm.invoke([("user", analysis_prompt)]).content
+        trimmed_summary_messages = safe_trim_messages([
+            HumanMessage(content=analysis_prompt)
+        ])
+        summary = llm.invoke(trimmed_summary_messages).content
         
         return {
             "generated_sql": sql_response,
@@ -84,10 +196,12 @@ class BoxOfficeAgentNodes:
         user_query = state["messages"][-1].content
         
         prompt = f"User Request: {user_query}\nCurrent Telemetry Data: {json.dumps(query_results)}\nFormulate business recommendations."
-        plan: ActionPlan = llm.invoke([
-            ("system", ACTION_PROMPT),
-            ("user", prompt)
+        trimmed_messages = safe_trim_messages([
+            SystemMessage(content=ACTION_PROMPT),
+            HumanMessage(content=prompt)
         ])
+        
+        plan: ActionPlan = llm.invoke(trimmed_messages)
         
         action_dicts = [a.model_dump() for a in plan.actions]
         
